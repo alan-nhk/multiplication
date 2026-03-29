@@ -1,0 +1,396 @@
+import React, { useState, useEffect } from 'react';
+import { Timer, Star, XCircle, CheckCircle2, RotateCcw, Play, Flame } from 'lucide-react';
+
+export default function App() {
+  const [gameState, setGameState] = useState('start'); // start, playing, finished
+  const [queue, setQueue] = useState([]);
+  const [currentQ, setCurrentQ] = useState(null);
+  const [options, setOptions] = useState([]);
+  const [timeLeft, setTimeLeft] = useState(3000); // 3 seconds in ms
+  const [showResult, setShowResult] = useState(false);
+  const [selectedAns, setSelectedAns] = useState(null);
+  const [feedback, setFeedback] = useState(null); // 'correct', 'wrong', 'timeout'
+  const [stats, setStats] = useState({ correctFirstTry: 0, totalAttempts: 0 });
+  const [initialTotal, setInitialTotal] = useState(0);
+
+  // 計分與連擊狀態
+  const [score, setScore] = useState(0);
+  const [combo, setCombo] = useState(0);
+  const [showCombo, setShowCombo] = useState(false);
+  const [startTime, setStartTime] = useState(null);
+  const [totalTime, setTotalTime] = useState(0);
+  const [earnedPoint, setEarnedPoint] = useState(0);
+
+  // 音效產生器
+  const playSound = (type) => {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    if (type === 'correct') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1); // A5
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.3);
+    } else if (type === 'wrong') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(150, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.2);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    }
+  };
+
+  // Initialize the game
+  const startGame = () => {
+    let initialQueue = [];
+    // Generate multiplication tables from 2x2 to 9x9
+    for (let i = 2; i <= 9; i++) {
+      for (let j = 2; j <= 9; j++) {
+        initialQueue.push({ a: i, b: j, isFirstTry: true });
+      }
+    }
+    // Shuffle the queue
+    initialQueue.sort(() => Math.random() - 0.5);
+
+    setInitialTotal(initialQueue.length);
+    setStats({ correctFirstTry: 0, totalAttempts: 0 });
+    setScore(0);
+    setCombo(0);
+    setStartTime(Date.now());
+    setQueue(initialQueue.slice(1));
+    setCurrentQ(initialQueue[0]);
+    generateOptions(initialQueue[0]);
+    setGameState('playing');
+    setShowResult(false);
+    setTimeLeft(3000);
+  };
+
+  // Generate 5 plausible options
+  const generateOptions = (q) => {
+    const correct = q.a * q.b;
+    const opts = new Set([correct]);
+    
+    while (opts.size < 5) {
+      const type = Math.random();
+      let wrongAns;
+      
+      if (type < 0.4) {
+        // Common mistake: Add or subtract one of the multiplicands
+        const modifier = Math.random() > 0.5 ? q.a : -q.a;
+        wrongAns = correct + modifier;
+      } else if (type < 0.8) {
+        // Common mistake: close number from the same table
+        const modifier = Math.random() > 0.5 ? q.b : -q.b;
+        wrongAns = correct + modifier;
+      } else {
+        // Completely random plausible number
+        wrongAns = correct + (Math.floor(Math.random() * 9) - 4);
+      }
+
+      if (wrongAns > 0 && wrongAns !== correct) {
+        opts.add(wrongAns);
+      }
+    }
+    
+    // Convert to array and shuffle
+    setOptions(Array.from(opts).sort(() => Math.random() - 0.5));
+  };
+
+  // Timer logic
+  useEffect(() => {
+    if (gameState !== 'playing' || showResult) return;
+
+    const interval = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 50) {
+          clearInterval(interval);
+          handleTimeout();
+          return 0;
+        }
+        return prev - 50;
+      });
+    }, 50);
+
+    return () => clearInterval(interval);
+  }, [gameState, showResult, currentQ]);
+
+  // Handle running out of time
+  const handleTimeout = () => {
+    if (showResult) return;
+    playSound('wrong');
+    setCombo(0);
+    setShowResult(true);
+    setFeedback('timeout');
+    setStats(prev => ({ ...prev, totalAttempts: prev.totalAttempts + 1 }));
+    
+    setTimeout(() => {
+      moveToNextQuestion(false);
+    }, 1500);
+  };
+
+  // Handle user selecting an answer
+  const handleAnswer = (ans) => {
+    if (showResult) return;
+    
+    setShowResult(true);
+    setSelectedAns(ans);
+    const isCorrect = ans === currentQ.a * currentQ.b;
+    
+    if (isCorrect) {
+      playSound('correct');
+      const newCombo = combo + 1;
+      setCombo(newCombo);
+      
+      const basePoint = currentQ.isFirstTry ? 1 : 0.5;
+      const point = newCombo >= 3 ? basePoint * 2 : basePoint;
+      setScore(prev => prev + point);
+      setEarnedPoint(point);
+      
+      if (newCombo >= 3) {
+        setShowCombo(true);
+        setTimeout(() => setShowCombo(false), 1200);
+      }
+    } else {
+      playSound('wrong');
+      setCombo(0);
+    }
+
+    setFeedback(isCorrect ? 'correct' : 'wrong');
+    
+    setStats(prev => ({ 
+      correctFirstTry: isCorrect && currentQ.isFirstTry ? prev.correctFirstTry + 1 : prev.correctFirstTry,
+      totalAttempts: prev.totalAttempts + 1 
+    }));
+
+    setTimeout(() => {
+      moveToNextQuestion(isCorrect);
+    }, 1500);
+  };
+
+  // Move to the next question or finish game
+  const moveToNextQuestion = (wasCorrect) => {
+    let newQueue = [...queue];
+    
+    if (!wasCorrect) {
+      // Re-insert the current question into the queue
+      let insertIndex = Math.floor(Math.random() * 4) + 2; 
+      if (insertIndex > newQueue.length) insertIndex = newQueue.length;
+      
+      newQueue.splice(insertIndex, 0, { ...currentQ, isFirstTry: false });
+    }
+
+    if (newQueue.length === 0) {
+      setTotalTime(Date.now() - startTime);
+      setGameState('finished');
+    } else {
+      setCurrentQ(newQueue[0]);
+      setQueue(newQueue.slice(1));
+      generateOptions(newQueue[0]);
+      setShowResult(false);
+      setSelectedAns(null);
+      setFeedback(null);
+      setTimeLeft(3000);
+    }
+  };
+
+  // Color calculation for progress bar
+  const getProgressColor = () => {
+    const percentage = timeLeft / 3000;
+    if (percentage > 0.5) return 'bg-emerald-500';
+    if (percentage > 0.25) return 'bg-amber-500';
+    return 'bg-red-500';
+  };
+
+  const formatTime = (ms) => {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m} 分 ${s} 秒`;
+  };
+
+  if (gameState === 'start') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full text-center space-y-8 border-t-8 border-[#D31145]">
+          <div className="w-20 h-20 bg-rose-100 rounded-full flex items-center justify-center mx-auto text-[#D31145]">
+            <Timer size={40} strokeWidth={2.5} />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold text-slate-800 mb-2">乘法口訣表挑戰</h1>
+            <p className="text-slate-500">準備好接受 3 秒鐘極速考驗了嗎？答錯或超時的題目會不斷回來，直到你完全掌握！</p>
+          </div>
+          <button 
+            onClick={startGame}
+            className="w-full bg-[#D31145] hover:bg-rose-700 text-white font-bold py-4 px-8 rounded-2xl transition-all duration-200 transform hover:scale-105 shadow-lg flex items-center justify-center space-x-2 text-lg"
+          >
+            <Play fill="currentColor" size={24} />
+            <span>開始挑戰</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (gameState === 'finished') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="bg-white p-8 rounded-3xl shadow-xl max-w-md w-full text-center space-y-8 border-t-8 border-[#D31145]">
+          <div className="w-24 h-24 bg-amber-100 rounded-full flex items-center justify-center mx-auto text-amber-500">
+            <Star size={48} fill="currentColor" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold text-slate-800 mb-2">太棒了！挑戰完成</h1>
+            <p className="text-slate-600">你成功征服了所有的乘法口訣表！</p>
+          </div>
+          
+          <div className="bg-slate-50 rounded-2xl p-6 grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-slate-500 text-sm mb-1">總分數</div>
+              <div className="text-3xl font-bold text-[#D31145]">{score} 分</div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-sm mb-1">總花費時間</div>
+              <div className="text-2xl font-bold text-slate-700 mt-1">{formatTime(totalTime)}</div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-sm mb-1">首次答對</div>
+              <div className="text-xl font-bold text-emerald-600">{stats.correctFirstTry} / {initialTotal}</div>
+            </div>
+            <div>
+              <div className="text-slate-500 text-sm mb-1">總嘗試次數</div>
+              <div className="text-xl font-bold text-slate-700">{stats.totalAttempts}</div>
+            </div>
+          </div>
+
+          <button 
+            onClick={startGame}
+            className="w-full bg-[#D31145] hover:bg-rose-700 text-white font-bold py-4 px-8 rounded-2xl transition-all duration-200 transform hover:scale-105 shadow-lg flex items-center justify-center space-x-2 text-lg"
+          >
+            <RotateCcw size={24} />
+            <span>重新挑戰</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentQ) return null;
+
+  const correctAnswer = currentQ.a * currentQ.b;
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4 sm:p-6 font-sans relative overflow-hidden">
+      {/* Combo 誇張特效 */}
+      {showCombo && (
+        <div className="absolute inset-0 flex items-center justify-center z-50 pointer-events-none">
+          <div className="transform animate-bounce">
+            <div className="text-6xl sm:text-8xl font-black text-transparent bg-clip-text bg-gradient-to-br from-orange-400 via-red-500 to-[#D31145] drop-shadow-2xl flex flex-col items-center">
+              <Flame size={80} className="text-orange-500 mb-4 animate-pulse" />
+              <span>COMBO x{combo}!</span>
+              <span className="text-4xl mt-2 text-[#D31145]">雙倍積分！</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-3xl shadow-lg max-w-lg w-full overflow-hidden flex flex-col h-[600px] border border-slate-100">
+        
+        {/* Header & Progress */}
+        <div className="p-6 pb-4 bg-white z-10 shadow-sm flex-shrink-0">
+          <div className="flex justify-between items-center mb-4">
+            <div className="flex space-x-4">
+              <div className="text-slate-500 font-medium">分數：<span className="text-[#D31145] font-bold text-lg">{score}</span></div>
+              <div className="text-slate-500 font-medium">連對：<span className="text-orange-500 font-bold text-lg">{combo}</span></div>
+            </div>
+            <div className="text-slate-500 font-medium bg-slate-100 px-3 py-1 rounded-full text-sm">
+              剩餘：{queue.length + 1}
+            </div>
+          </div>
+          
+          {/* Timer Bar */}
+          <div className="h-4 bg-slate-100 rounded-full overflow-hidden w-full shadow-inner">
+            <div 
+              className={`h-full ${getProgressColor()} transition-all duration-75 ease-linear`}
+              style={{ width: `${(timeLeft / 3000) * 100}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Question Area */}
+        <div className="flex-1 flex flex-col items-center justify-center p-8 relative">
+          {/* Feedback Overlay */}
+          {showResult && (
+            <div className="absolute top-4 left-0 right-0 flex justify-center animate-bounce z-20">
+              {feedback === 'correct' && (
+                <div className="bg-emerald-500 text-white px-6 py-2 rounded-full font-bold flex items-center shadow-lg">
+                  <CheckCircle2 className="mr-2" /> 答對了！ (+{earnedPoint}分)
+                </div>
+              )}
+              {feedback === 'wrong' && (
+                <div className="bg-red-500 text-white px-6 py-2 rounded-full font-bold flex items-center shadow-lg">
+                  <XCircle className="mr-2" /> 哎呀，稍後再試！
+                </div>
+              )}
+              {feedback === 'timeout' && (
+                <div className="bg-amber-500 text-white px-6 py-2 rounded-full font-bold flex items-center shadow-lg">
+                  <Timer className="mr-2" /> 時間到！稍後再試！
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="text-7xl sm:text-8xl font-black text-slate-800 tracking-tight flex items-center space-x-4">
+            <span>{currentQ.a}</span>
+            <span className="text-[#D31145]">×</span>
+            <span>{currentQ.b}</span>
+          </div>
+        </div>
+
+        {/* Options Area */}
+        <div className="p-6 bg-slate-50 flex-shrink-0">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {options.map((opt, idx) => {
+              // Determine button styling based on state
+              let btnClass = "bg-white text-slate-700 hover:bg-slate-100 border-2 border-slate-200 shadow-sm";
+              
+              if (showResult) {
+                if (opt === correctAnswer) {
+                  btnClass = "bg-emerald-500 text-white border-emerald-500 shadow-emerald-200 shadow-lg transform scale-105"; // Correct answer highlights green
+                } else if (opt === selectedAns) {
+                  btnClass = "bg-red-500 text-white border-red-500 shadow-red-200"; // Wrong selected highlights red
+                } else {
+                  btnClass = "bg-white text-slate-300 border-slate-100 opacity-50"; // Others fade out
+                }
+              }
+
+              // Make the last item span two columns on mobile if there's 5 items total
+              const spanClass = (idx === 4) ? "col-span-2 sm:col-span-1" : "";
+
+              return (
+                <button
+                  key={idx}
+                  onClick={() => handleAnswer(opt)}
+                  disabled={showResult}
+                  className={`${btnClass} ${spanClass} text-3xl font-bold py-5 rounded-2xl transition-all duration-200 flex items-center justify-center focus:outline-none`}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        
+      </div>
+    </div>
+  );
+}
